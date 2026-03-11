@@ -1,0 +1,258 @@
+import React, { useState, useEffect } from 'react';
+import axios from 'axios';
+import { 
+  Cloud, 
+  Shield, 
+  Code, 
+  Play, 
+  Terminal, 
+  RefreshCw, 
+  CheckCircle, 
+  AlertTriangle 
+} from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
+
+const App = () => {
+  const [loading, setLoading] = useState(false);
+  const [resources, setResources] = useState(null);
+  const [analysis, setAnalysis] = useState(null);
+  const [terraformCode, setTerraformCode] = useState('');
+  const [execLogs, setExecLogs] = useState([]);
+  const [prompt, setPrompt] = useState('');
+  const [error, setError] = useState(null);
+  const [backendStatus, setBackendStatus] = useState('checking');
+
+  useEffect(() => {
+    checkBackendHealth();
+  }, []);
+
+  const checkBackendHealth = async () => {
+    try {
+      await axios.get('/api/health');
+      setBackendStatus('connected');
+      setError(null);
+    } catch (err) {
+      setBackendStatus('disconnected');
+      setError('Backend is not running. Please start it with: cd backend && python run.py');
+    }
+  };
+
+  const scanCloud = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await axios.post('/api/scan-cloud');
+      setResources(res.data.resources);
+      setAnalysis(res.data.analysis);
+    } catch (err) {
+      const msg = err.response?.data?.detail || err.message || 'Failed to scan cloud';
+      setError(msg);
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const generateTerraform = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await axios.post('/api/generate-terraform', { prompt });
+      setTerraformCode(res.data.terraform_code || res.data.error || 'No code generated');
+      if (res.data.error) {
+        setError(`Generation issue: ${res.data.error}`);
+      }
+    } catch (err) {
+      const msg = err.response?.data?.detail || err.message || 'Failed to generate terraform';
+      setError(msg);
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const executeTerraform = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await axios.post('/api/execute-terraform');
+      setExecLogs(prev => [...prev, JSON.stringify(res.data, null, 2)]);
+      if (res.data.status === 'error') {
+        setError(`Terraform failed during ${res.data.phase}: ${res.data.output?.stderr || 'Unknown error'}`);
+      }
+    } catch (err) {
+      const msg = err.response?.data?.detail || err.message || 'Failed to execute terraform';
+      setError(msg);
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen p-6 flex flex-col gap-6 max-w-7xl mx-auto w-full">
+      {/* Header */}
+      <header className="flex justify-between items-center glass p-4 mb-2">
+        <div className="flex items-center gap-3">
+          <div className="p-2 bg-blue-600/20 rounded-lg">
+            <Cloud className="text-blue-500" size={24} />
+          </div>
+          <div>
+            <h1 className="text-xl font-bold gradient-text">Cloud Infrastructure Assistant</h1>
+            <div className="flex items-center gap-2 text-xs">
+              <span className={`w-2 h-2 rounded-full ${backendStatus === 'connected' ? 'bg-green-500' : backendStatus === 'checking' ? 'bg-yellow-500' : 'bg-red-500'}`}></span>
+              <span className="text-gray-400">
+                {backendStatus === 'connected' ? 'Backend Connected' : backendStatus === 'checking' ? 'Checking...' : 'Backend Disconnected'}
+              </span>
+            </div>
+          </div>
+        </div>
+        <button 
+          onClick={scanCloud}
+          disabled={loading || backendStatus !== 'connected'}
+          className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg font-medium transition-colors disabled:opacity-50"
+        >
+          {loading ? <RefreshCw className="animate-spin" size={18} /> : <RefreshCw size={18} />}
+          Scan Environment
+        </button>
+      </header>
+
+      {/* Error Banner */}
+      {error && (
+        <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-4 flex items-center gap-3">
+          <AlertTriangle className="text-red-500" size={20} />
+          <span className="text-red-400 text-sm">{error}</span>
+          <button 
+            onClick={() => setError(null)} 
+            className="ml-auto text-xs text-red-400 hover:text-red-300 underline"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 flex-1">
+        {/* Left Column: Resources & AI Analysis */}
+        <div className="lg:col-span-8 flex flex-col gap-6">
+          <section className="glass p-6 flex-1 overflow-auto max-h-[500px]">
+            <div className="flex items-center gap-2 mb-4">
+              <Shield className="text-purple-500" size={20} />
+              <h2 className="text-lg font-semibold">Cloud Dashboard</h2>
+            </div>
+            
+            {!resources ? (
+              <div className="flex flex-col items-center justify-center h-64 text-gray-500 border-2 border-dashed border-gray-800 rounded-xl">
+                <p>No resources scanned yet. Click "Scan Environment" to begin.</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <ResourceCard title="EC2 Instances" count={resources.ec2_instances?.length || 0} items={resources.ec2_instances} />
+                <ResourceCard title="S3 Buckets" count={resources.s3_buckets?.length || 0} items={resources.s3_buckets} />
+                <ResourceCard title="VPCs" count={resources.vpcs?.length || 0} items={resources.vpcs} />
+                <ResourceCard title="Security Groups" count={resources.security_groups?.length || 0} items={resources.security_groups} />
+              </div>
+            )}
+
+            {analysis && (
+              <div className="mt-6 p-4 bg-yellow-500/10 border border-yellow-500/20 rounded-xl">
+                <div className="flex items-center gap-2 text-yellow-500 mb-2">
+                  <AlertTriangle size={18} />
+                  <span className="font-semibold">AI Insights</span>
+                </div>
+                <div className="text-sm text-gray-300 space-y-2">
+                  {Object.entries(analysis).map(([key, val]) => (
+                    <div key={key}>
+                      <span className="font-bold text-gray-100">{key}:</span> {JSON.stringify(val)}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </section>
+
+          {/* AI Chat / Interaction */}
+          <section className="glass p-6 flex flex-col gap-4">
+            <div className="flex items-center gap-2 mb-2">
+              <Terminal className="text-emerald-500" size={20} />
+              <h2 className="text-lg font-semibold">AI Assistant</h2>
+            </div>
+            <div className="flex gap-2">
+              <input 
+                type="text" 
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+                placeholder="e.g., Generate a VPC with 2 public subnets..."
+                className="flex-1 bg-gray-900 border border-gray-800 rounded-lg px-4 py-2 focus:outline-none focus:border-blue-500"
+              />
+              <button 
+                onClick={generateTerraform}
+                disabled={!prompt.trim() || loading || backendStatus !== 'connected'}
+                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 rounded-lg font-medium transition-colors disabled:opacity-50"
+              >
+                Generate IaC
+              </button>
+            </div>
+          </section>
+        </div>
+
+        {/* Right Column: Code & Execution */}
+        <div className="lg:col-span-4 flex flex-col gap-6">
+          <section className="glass p-6 flex-1 flex flex-col">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <Code className="text-blue-400" size={20} />
+                <h2 className="text-lg font-semibold">Terraform Output</h2>
+              </div>
+              <button 
+                onClick={executeTerraform}
+                disabled={!terraformCode || loading}
+                className="flex items-center gap-2 px-3 py-1 bg-white/10 hover:bg-white/20 rounded text-sm disabled:opacity-30"
+              >
+                <Play size={14} /> Run
+              </button>
+            </div>
+            <pre className="flex-1 bg-black/40 p-4 rounded-lg overflow-auto font-mono text-xs text-blue-300 border border-gray-800">
+              {terraformCode || "# Generated code will appear here..."}
+            </pre>
+          </section>
+
+          <section className="glass p-6 min-h-[200px] max-h-[300px] overflow-auto">
+            <div className="flex items-center gap-2 mb-4">
+              <Terminal size={18} className="text-gray-400" />
+              <h2 className="text-sm font-semibold uppercase tracking-wider text-gray-400">Execution Logs</h2>
+            </div>
+            <div className="font-mono text-[10px] space-y-2">
+              {execLogs.map((log, i) => (
+                <div key={i} className="p-2 bg-black/30 rounded border border-white/5 whitespace-pre-wrap">
+                  {log}
+                </div>
+              ))}
+              {execLogs.length === 0 && <p className="text-gray-600 italic">No logs yet.</p>}
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const ResourceCard = ({ title, count, items }) => (
+  <div className="card glass p-4 bg-white/5 border-white/10">
+    <div className="flex justify-between items-start">
+      <h3 className="text-sm font-medium text-gray-400">{title}</h3>
+      <span className="px-2 py-0.5 bg-blue-600/20 text-blue-400 rounded text-xs font-bold">{count}</span>
+    </div>
+    <div className="mt-3 space-y-1">
+      {items.slice(0, 3).map((item, i) => (
+        <div key={i} className="text-xs text-gray-300 flex items-center gap-1">
+          <div className="w-1 h-1 bg-blue-500 rounded-full" />
+          {item.Name || item.InstanceId || item.VpcId || item.GroupId}
+        </div>
+      ))}
+      {items.length > 3 && <p className="text-[10px] text-gray-500 mt-1">+{items.length - 3} more</p>}
+      {count === 0 && <p className="text-xs text-gray-600 italic">None found</p>}
+    </div>
+  </div>
+);
+
+export default App;

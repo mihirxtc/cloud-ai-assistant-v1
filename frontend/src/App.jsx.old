@@ -1,0 +1,408 @@
+import React, { useState, useEffect } from 'react';
+import axios from 'axios';
+import { 
+  Cloud, 
+  Shield, 
+  Code, 
+  Play, 
+  Terminal, 
+  RefreshCw, 
+  AlertTriangle,
+  Server,
+  Database,
+  Network,
+  Lock,
+  ChevronRight,
+  CheckCircle2,
+  XCircle
+} from 'lucide-react';
+
+const App = () => {
+  const [loading, setLoading] = useState(false);
+  const [resources, setResources] = useState(null);
+  const [analysis, setAnalysis] = useState(null);
+  const [terraformCode, setTerraformCode] = useState('');
+  const [execLogs, setExecLogs] = useState([]);
+  const [prompt, setPrompt] = useState('');
+  const [error, setError] = useState(null);
+  const [backendStatus, setBackendStatus] = useState('checking');
+  const [activeTab, setActiveTab] = useState('resources');
+
+  useEffect(() => {
+    checkBackendHealth();
+    const interval = setInterval(checkBackendHealth, 5000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const checkBackendHealth = async () => {
+    try {
+      await axios.get('/api/health');
+      setBackendStatus('connected');
+      setError(null);
+    } catch (err) {
+      setBackendStatus('disconnected');
+      if (!error) {
+        setError('Backend not connected. Run: cd backend && python run.py');
+      }
+    }
+  };
+
+  const scanCloud = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await axios.post('/api/scan-cloud');
+      setResources(res.data.resources);
+      setAnalysis(res.data.analysis);
+      setActiveTab('resources');
+    } catch (err) {
+      const msg = err.response?.data?.detail || err.message || 'Failed to scan cloud';
+      setError(msg);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const generateTerraform = async () => {
+    if (!prompt.trim()) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await axios.post('/api/generate-terraform', { prompt, context: resources });
+      setTerraformCode(res.data.terraform_code || '');
+      if (res.data.error) {
+        setError(`Generation issue: ${res.data.error}`);
+      }
+      setActiveTab('terraform');
+    } catch (err) {
+      const msg = err.response?.data?.detail || err.message || 'Failed to generate terraform';
+      setError(msg);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const executeTerraform = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await axios.post('/api/execute-terraform');
+      setExecLogs(prev => [...prev, { time: new Date().toLocaleTimeString(), data: res.data }]);
+      if (res.data.status === 'error') {
+        setError(`Terraform failed: ${res.data.output?.stderr || 'Unknown error'}`);
+      }
+    } catch (err) {
+      const msg = err.response?.data?.detail || err.message || 'Failed to execute terraform';
+      setError(msg);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const StatusIcon = () => {
+    if (backendStatus === 'connected') return <CheckCircle2 size={16} className="text-green-400" />;
+    if (backendStatus === 'checking') return <RefreshCw size={16} className="text-yellow-400 animate-spin" />;
+    return <XCircle size={16} className="text-red-400" />;
+  };
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white">
+      {/* Header */}
+      <header className="border-b border-white/10 bg-slate-900/80 backdrop-blur-md sticky top-0 z-50">
+        <div className="max-w-7xl mx-auto px-6 py-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <div className="p-3 bg-blue-500/20 rounded-xl border border-blue-500/30">
+                <Cloud className="text-blue-400" size={28} />
+              </div>
+              <div>
+                <h1 className="text-2xl font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
+                  Cloud Infrastructure Assistant
+                </h1>
+                <div className="flex items-center gap-2 mt-1">
+                  <StatusIcon />
+                  <span className={`text-sm ${backendStatus === 'connected' ? 'text-green-400' : 'text-red-400'}`}>
+                    {backendStatus === 'connected' ? 'Backend Connected' : backendStatus === 'checking' ? 'Connecting...' : 'Backend Disconnected'}
+                  </span>
+                </div>
+              </div>
+            </div>
+            
+            <button 
+              onClick={scanCloud}
+              disabled={loading || backendStatus !== 'connected'}
+              className="flex items-center gap-2 px-6 py-3 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 disabled:cursor-not-allowed rounded-xl font-semibold transition-all duration-200 shadow-lg shadow-blue-500/20 hover:shadow-blue-500/40"
+            >
+              {loading ? <RefreshCw className="animate-spin" size={20} /> : <RefreshCw size={20} />}
+              Scan Environment
+            </button>
+          </div>
+        </div>
+      </header>
+
+      {/* Error Banner */}
+      {error && (
+        <div className="max-w-7xl mx-auto px-6 mt-4">
+          <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 flex items-center gap-3">
+            <AlertTriangle className="text-red-400" size={24} />
+            <span className="text-red-300 flex-1">{error}</span>
+            <button 
+              onClick={() => setError(null)} 
+              className="text-red-400 hover:text-red-300 px-3 py-1 rounded-lg hover:bg-red-500/10 transition-colors"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Main Content */}
+      <main className="max-w-7xl mx-auto px-6 py-6">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          
+          {/* Left Column */}
+          <div className="space-y-6">
+            {/* Navigation Tabs */}
+            <div className="flex gap-2 bg-slate-800/50 p-1 rounded-xl border border-white/10">
+              <button
+                onClick={() => setActiveTab('resources')}
+                className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-lg font-medium transition-all ${
+                  activeTab === 'resources' 
+                    ? 'bg-blue-600 text-white' 
+                    : 'text-slate-400 hover:text-white hover:bg-white/5'
+                }`}
+              >
+                <Server size={18} />
+                Resources
+              </button>
+              <button
+                onClick={() => setActiveTab('analysis')}
+                className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-lg font-medium transition-all ${
+                  activeTab === 'analysis' 
+                    ? 'bg-purple-600 text-white' 
+                    : 'text-slate-400 hover:text-white hover:bg-white/5'
+                }`}
+              >
+                <Shield size={18} />
+                AI Analysis
+              </button>
+            </div>
+
+            {/* Content Panel */}
+            <div className="bg-slate-800/40 backdrop-blur-sm border border-white/10 rounded-2xl p-6 min-h-[400px]">
+              {activeTab === 'resources' && (
+                <div>
+                  <div className="flex items-center gap-3 mb-6">
+                    <div className="p-2 bg-blue-500/20 rounded-lg">
+                      <Server className="text-blue-400" size={24} />
+                    </div>
+                    <h2 className="text-xl font-semibold">Cloud Resources</h2>
+                  </div>
+                  
+                  {!resources ? (
+                    <div className="flex flex-col items-center justify-center h-64 text-slate-400">
+                      <Cloud size={48} className="mb-4 opacity-30" />
+                      <p className="text-center">No resources scanned yet.<br/>Click "Scan Environment" to begin.</p>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-2 gap-4">
+                      <ResourceCard 
+                        icon={<Server size={20} />} 
+                        title="EC2 Instances" 
+                        count={resources.ec2_instances?.length || 0} 
+                        items={resources.ec2_instances}
+                        color="blue"
+                      />
+                      <ResourceCard 
+                        icon={<Database size={20} />} 
+                        title="S3 Buckets" 
+                        count={resources.s3_buckets?.length || 0} 
+                        items={resources.s3_buckets}
+                        color="emerald"
+                      />
+                      <ResourceCard 
+                        icon={<Network size={20} />} 
+                        title="VPCs" 
+                        count={resources.vpcs?.length || 0} 
+                        items={resources.vpcs}
+                        color="purple"
+                      />
+                      <ResourceCard 
+                        icon={<Lock size={20} />} 
+                        title="Security Groups" 
+                        count={resources.security_groups?.length || 0} 
+                        items={resources.security_groups}
+                        color="orange"
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {activeTab === 'analysis' && (
+                <div>
+                  <div className="flex items-center gap-3 mb-6">
+                    <div className="p-2 bg-purple-500/20 rounded-lg">
+                      <Shield className="text-purple-400" size={24} />
+                    </div>
+                    <h2 className="text-xl font-semibold">AI Security Analysis</h2>
+                  </div>
+                  
+                  {!analysis ? (
+                    <div className="flex flex-col items-center justify-center h-64 text-slate-400">
+                      <Shield size={48} className="mb-4 opacity-30" />
+                      <p className="text-center">No analysis available.<br/>Scan your environment first.</p>
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      {Object.entries(analysis).map(([key, value]) => (
+                        <div key={key} className="bg-slate-700/50 rounded-xl p-4 border border-white/5">
+                          <h3 className="text-sm font-medium text-slate-300 mb-2 capitalize">{key.replace(/_/g, ' ')}</h3>
+                          <p className="text-slate-400 text-sm">{typeof value === 'string' ? value : JSON.stringify(value, null, 2)}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* AI Assistant Panel */}
+            <div className="bg-slate-800/40 backdrop-blur-sm border border-white/10 rounded-2xl p-6">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="p-2 bg-emerald-500/20 rounded-lg">
+                  <Terminal className="text-emerald-400" size={24} />
+                </div>
+                <div>
+                  <h2 className="text-xl font-semibold">AI Assistant</h2>
+                  <p className="text-sm text-slate-400">Describe infrastructure to generate Terraform</p>
+                </div>
+              </div>
+              
+              <div className="flex gap-3">
+                <input 
+                  type="text" 
+                  value={prompt}
+                  onChange={(e) => setPrompt(e.target.value)}
+                  placeholder="e.g., Create an S3 bucket with versioning enabled..."
+                  className="flex-1 bg-slate-900 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-blue-500/50 focus:ring-2 focus:ring-blue-500/20 transition-all"
+                  onKeyPress={(e) => e.key === 'Enter' && generateTerraform()}
+                />
+                <button 
+                  onClick={generateTerraform}
+                  disabled={!prompt.trim() || loading || backendStatus !== 'connected'}
+                  className="px-6 py-3 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 disabled:cursor-not-allowed rounded-xl font-semibold transition-all duration-200 shadow-lg shadow-emerald-500/20 hover:shadow-emerald-500/40 whitespace-nowrap"
+                >
+                  Generate IaC
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Right Column */}
+          <div className="space-y-6">
+            {/* Terraform Code Panel */}
+            <div className="bg-slate-800/40 backdrop-blur-sm border border-white/10 rounded-2xl p-6">
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 bg-blue-500/20 rounded-lg">
+                    <Code className="text-blue-400" size={24} />
+                  </div>
+                  <h2 className="text-xl font-semibold">Terraform Code</h2>
+                </div>
+                <button 
+                  onClick={executeTerraform}
+                  disabled={!terraformCode || loading || backendStatus !== 'connected'}
+                  className="flex items-center gap-2 px-4 py-2 bg-white/10 hover:bg-white/20 disabled:bg-slate-700 disabled:cursor-not-allowed rounded-xl font-medium transition-all"
+                >
+                  <Play size={18} />
+                  Run
+                </button>
+              </div>
+              
+              <div className="bg-slate-950 rounded-xl border border-white/10 overflow-hidden">
+                <div className="flex items-center gap-2 px-4 py-2 bg-slate-900 border-b border-white/10">
+                  <div className="w-3 h-3 rounded-full bg-red-500/80"></div>
+                  <div className="w-3 h-3 rounded-full bg-yellow-500/80"></div>
+                  <div className="w-3 h-3 rounded-full bg-green-500/80"></div>
+                  <span className="ml-2 text-xs text-slate-500">main.tf</span>
+                </div>
+                <pre className="p-4 text-sm font-mono text-blue-300 overflow-auto max-h-[300px] whitespace-pre-wrap">
+                  {terraformCode || '# Generated Terraform code will appear here...\n\n# Example:\n# resource "aws_s3_bucket" "example" {\n#   bucket = "my-bucket"\n# }'}
+                </pre>
+              </div>
+            </div>
+
+            {/* Execution Logs Panel */}
+            <div className="bg-slate-800/40 backdrop-blur-sm border border-white/10 rounded-2xl p-6">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="p-2 bg-slate-500/20 rounded-lg">
+                  <Terminal className="text-slate-400" size={24} />
+                </div>
+                <h2 className="text-xl font-semibold">Execution Logs</h2>
+              </div>
+              
+              <div className="bg-slate-950 rounded-xl border border-white/10 p-4 h-[200px] overflow-auto">
+                {execLogs.length === 0 ? (
+                  <p className="text-slate-500 text-sm italic">No execution logs yet. Generate and run Terraform to see logs.</p>
+                ) : (
+                  <div className="space-y-3">
+                    {execLogs.map((log, i) => (
+                      <div key={i} className="text-xs font-mono">
+                        <span className="text-slate-500">[{log.time}]</span>
+                        <pre className="mt-1 text-slate-300 whitespace-pre-wrap">{JSON.stringify(log.data, null, 2)}</pre>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+  );
+};
+
+const ResourceCard = ({ icon, title, count, items, color }) => {
+  const colors = {
+    blue: 'bg-blue-500/10 border-blue-500/20 text-blue-400',
+    emerald: 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400',
+    purple: 'bg-purple-500/10 border-purple-500/20 text-purple-400',
+    orange: 'bg-orange-500/10 border-orange-500/20 text-orange-400',
+  };
+
+  return (
+    <div className={`${colors[color]} rounded-xl p-4 border`}>
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          {icon}
+          <span className="font-medium text-white">{title}</span>
+        </div>
+        <span className="px-2 py-1 bg-white/10 rounded-lg text-sm font-bold">
+          {count}
+        </span>
+      </div>
+      
+      <div className="space-y-1">
+      {items && items.length > 0 ? (
+  items.slice(0, 3).map((item, i) => (
+    <div key={i} className="flex items-center gap-2 text-sm">
+      <ChevronRight size={14} className="opacity-50" />
+      <span className="truncate">
+        {item.Name || item.InstanceId || item.VpcId || item.GroupId || 'Unknown'}
+      </span>
+    </div>
+  ))
+) : (
+  <p className="text-sm opacity-60 italic">No items found</p>
+)}
+      {items && items.length > 3 && (
+        <p className="text-xs opacity-60 mt-2">+{items.length - 3} more</p>
+      )}
+    </div>
+    </div>
+  );
+};
+
+export default App;
