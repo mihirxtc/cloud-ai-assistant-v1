@@ -2,16 +2,19 @@
 Cloud AI Assistant - Main API with Agentic AI capabilities.
 FastAPI backend with multiple agents, LLM model selection, and Terraform execution.
 """
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, Response, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
 import os
 import json
+import uuid
+from datetime import datetime, timedelta
 
 # Services
 from services.llm_service import LLMService, AVAILABLE_MODELS
 from services.aws_service import AWSService
+from services.fast_aws_service import FastAWSService
 from services.terraform_service import TerraformService
 
 # Agents
@@ -20,13 +23,18 @@ from agents import AgentOrchestrator
 # Utils
 from utils.mcp_builder import MCPContextBuilder
 
+# Session storage (in-memory for now, use Redis/DB for production)
+session_store: Dict[str, Dict[str, Any]] = {}
+SESSION_COOKIE_NAME = "cloud_ai_session"
+SESSION_EXPIRY_HOURS = 24  # Sessions last 24 hours
+
 app = FastAPI(
     title="Cloud AI Assistant API",
     description="Agentic AI-powered cloud infrastructure management with multi-model LLM support",
     version="2.0.0"
 )
 
-# CORS
+# CORS - allow credentials for cookies
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://localhost:5174"],
@@ -37,7 +45,6 @@ app.add_middleware(
 
 # Global services
 llm_service = LLMService()
-aws_service = AWSService()
 terraform_service = TerraformService()
 agent_orchestrator = AgentOrchestrator(llm_service)
 
@@ -65,6 +72,55 @@ class TerraformGenerateRequest(BaseModel):
 class TerraformExecuteRequest(BaseModel):
     confirm: bool = False
     code: Optional[str] = None
+
+
+class AWSCredentialsRequest(BaseModel):
+    aws_access_key_id: str
+    aws_secret_access_key: str
+    region: str = "us-east-1"
+
+
+class AWSRegionRequest(BaseModel):
+    region: str
+
+
+# Session Helpers
+def get_session_id(request: Request) -> Optional[str]:
+    """Get session ID from cookie."""
+    return request.cookies.get(SESSION_COOKIE_NAME)
+
+
+def get_session_data(session_id: Optional[str] = Depends(get_session_id)) -> Optional[Dict[str, Any]]:
+    """Get session data from store if valid."""
+    if not session_id:
+        return None
+    session = session_store.get(session_id)
+    if not session:
+        return None
+    # Check expiry
+    if session.get("expires") and datetime.now() > session.get("expires"):
+        del session_store[session_id]
+        return None
+    return session
+
+
+def get_aws_service(session_data: Optional[Dict] = Depends(get_session_data)) -> FastAWSService:
+    """Get AWS service with session credentials or default."""
+    if session_data and session_data.get("aws_credentials"):
+        creds = session_data["aws_credentials"]
+        return FastAWSService(
+            region_name=creds.get("region", "us-east-1"),
+            aws_access_key_id=creds.get("aws_access_key_id"),
+            aws_secret_access_key=creds.get("aws_secret_access_key")
+        )
+    # Return default service (uses env variables or IAM role)
+    return FastAWSService()
+
+
+def is_connected(session_data: Optional[Dict] = Depends(get_session_data)) -> bool:
+    """Check if user has active AWS connection."""
+    return session_data is not None and session_data.get("aws_credentials") is not None
+
 
 # Health check
 @app.get("/health")
@@ -107,11 +163,12 @@ async def select_model(request: ModelSelectRequest):
 
 # Resource Scanning
 @app.post("/scan-cloud")
-async def scan_cloud():
-    """Scan AWS cloud resources with detailed information."""
+async def scan_cloud(aws_service: FastAWSService = Depends(get_aws_service)):
+    """Scan AWS cloud resources - always fetches fresh data."""
     global cached_resources
     try:
-        resources = aws_service.scan_all_resources()
+        # Force refresh to bypass any caching
+        resources = aws_service.scan_all_resources(force_refresh=True)
         cached_resources = resources
         
         return {
@@ -140,7 +197,7 @@ async def get_cached_resources():
 
 # Agent Queries
 @app.post("/agent/query")
-async def agent_query(request: QueryRequest):
+async def agent_query(request: QueryRequest, aws_service: FastAWSService = Depends(get_aws_service)):
     """Process a query through the agent orchestrator."""
     try:
         # Use specified model if different from current
@@ -165,7 +222,7 @@ async def agent_query(request: QueryRequest):
 
 # Security Analysis
 @app.post("/analyze/security")
-async def analyze_security(model_name: Optional[str] = None):
+async def analyze_security(model_name: Optional[str] = None, aws_service: FastAWSService = Depends(get_aws_service)):
     """Perform comprehensive security analysis."""
     try:
         if model_name:
@@ -185,7 +242,7 @@ async def analyze_security(model_name: Optional[str] = None):
 
 # Cost Analysis
 @app.post("/analyze/cost")
-async def analyze_cost(model_name: Optional[str] = None):
+async def analyze_cost(model_name: Optional[str] = None, aws_service: FastAWSService = Depends(get_aws_service)):
     """Perform cost optimization analysis."""
     try:
         if model_name:
@@ -275,7 +332,7 @@ async def terraform_status():
 
 # MCP Context Builder
 @app.post("/mcp/build-context")
-async def build_mcp_context(context_type: str = "security"):
+async def build_mcp_context(context_type: str = "security", aws_service: FastAWSService = Depends(get_aws_service)):
     """Build Model Context Protocol formatted context."""
     try:
         resources = cached_resources or aws_service.scan_all_resources()
@@ -302,7 +359,7 @@ async def build_mcp_context(context_type: str = "security"):
 
 # Dashboard Data
 @app.get("/dashboard")
-async def get_dashboard_data():
+async def get_dashboard_data(aws_service: FastAWSService = Depends(get_aws_service)):
     """Get aggregated data for dashboard visualization."""
     try:
         resources = cached_resources or aws_service.scan_all_resources()
@@ -346,3 +403,168 @@ async def get_dashboard_data():
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# AWS Credentials Management
+@app.post("/aws/connect")
+async def connect_aws(request: AWSCredentialsRequest, response: Response):
+    """Connect to AWS using provided credentials - sets session cookie and clears old cache."""
+    global cached_resources
+    try:
+        # Validate credentials first
+        validation = FastAWSService.validate_credentials(
+            request.aws_access_key_id,
+            request.aws_secret_access_key,
+            request.region
+        )
+        
+        if not validation["valid"]:
+            raise HTTPException(status_code=401, detail=f"Invalid credentials: {validation.get('error')}")
+        
+        # Clear old cached resources when connecting with new credentials
+        cached_resources = None
+        
+        # Generate session ID
+        session_id = str(uuid.uuid4())
+        
+        # Store session data
+        session_store[session_id] = {
+            "aws_credentials": {
+                "aws_access_key_id": request.aws_access_key_id,
+                "aws_secret_access_key": request.aws_secret_access_key,
+                "region": request.region,
+                "account": validation.get("account"),
+                "arn": validation.get("arn")
+            },
+            "created_at": datetime.now(),
+            "expires": datetime.now() + timedelta(hours=SESSION_EXPIRY_HOURS)
+        }
+        
+        # Set HTTP-only cookie
+        response.set_cookie(
+            key=SESSION_COOKIE_NAME,
+            value=session_id,
+            httponly=True,
+            secure=False,  # Set to True in production with HTTPS
+            samesite="lax",
+            max_age=SESSION_EXPIRY_HOURS * 3600  # 24 hours in seconds
+        )
+        
+        return {
+            "success": True,
+            "message": "AWS connection successful",
+            "account": validation.get("account"),
+            "region": request.region,
+            "user_id": validation.get("user_id"),
+            "session_expires": session_store[session_id]["expires"].isoformat()
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/aws/status")
+async def aws_connection_status(session_data: Optional[Dict] = Depends(get_session_data)):
+    """Get current AWS connection status from session."""
+    if not session_data or not session_data.get("aws_credentials"):
+        return {
+            "connected": False,
+            "account": None,
+            "region": None,
+            "cached_resources": cached_resources is not None,
+            "last_scan": cached_resources.get("scan_timestamp") if cached_resources else None
+        }
+    
+    creds = session_data["aws_credentials"]
+    try:
+        # Validate credentials are still working
+        validation = FastAWSService.validate_credentials(
+            creds["aws_access_key_id"],
+            creds["aws_secret_access_key"],
+            creds["region"]
+        )
+        
+        return {
+            "connected": validation.get("valid", False),
+            "account": creds.get("account") if validation.get("valid") else None,
+            "region": creds.get("region"),
+            "cached_resources": cached_resources is not None,
+            "last_scan": cached_resources.get("scan_timestamp") if cached_resources else None,
+            "session_expires": session_data.get("expires").isoformat() if session_data.get("expires") else None
+        }
+    except:
+        return {
+            "connected": False,
+            "account": None,
+            "region": creds.get("region"),
+            "cached_resources": cached_resources is not None,
+            "last_scan": cached_resources.get("scan_timestamp") if cached_resources else None
+        }
+
+
+@app.post("/aws/region")
+async def change_region(request: AWSRegionRequest, session_data: Optional[Dict] = Depends(get_session_data)):
+    """Change AWS region - updates session."""
+    if not session_data or not session_data.get("aws_credentials"):
+        raise HTTPException(status_code=401, detail="No active AWS session. Please connect first.")
+    
+    try:
+        # Update region in session
+        session_data["aws_credentials"]["region"] = request.region
+        
+        # Create new service with updated region
+        test_service = FastAWSService(
+            region_name=request.region,
+            aws_access_key_id=session_data["aws_credentials"]["aws_access_key_id"],
+            aws_secret_access_key=session_data["aws_credentials"]["aws_secret_access_key"]
+        )
+        
+        # Test the connection
+        validation = FastAWSService.validate_credentials(
+            session_data["aws_credentials"]["aws_access_key_id"],
+            session_data["aws_credentials"]["aws_secret_access_key"],
+            request.region
+        )
+        
+        if not validation["valid"]:
+            # Revert region change
+            session_data["aws_credentials"]["region"] = session_data["aws_credentials"].get("region", "us-east-1")
+            raise HTTPException(status_code=400, detail=f"Failed to connect to region: {validation.get('error')}")
+        
+        return {
+            "success": True,
+            "region": request.region,
+            "account": validation.get("account")
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/aws/logout")
+async def logout_aws(response: Response, request: Request):
+    """Logout and clear AWS session and cached resources."""
+    global cached_resources
+    session_id = request.cookies.get(SESSION_COOKIE_NAME)
+    
+    # Remove session from store
+    if session_id and session_id in session_store:
+        del session_store[session_id]
+    
+    # Clear cached resources on logout
+    cached_resources = None
+    
+    # Clear cookie
+    response.delete_cookie(
+        key=SESSION_COOKIE_NAME,
+        httponly=True,
+        secure=False,  # Set to True in production with HTTPS
+        samesite="lax"
+    )
+    
+    return {
+        "success": True,
+        "message": "Logged out successfully"
+    }
