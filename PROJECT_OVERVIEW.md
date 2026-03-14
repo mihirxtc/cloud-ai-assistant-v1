@@ -27,7 +27,7 @@ An **Agentic AI-powered Cloud Infrastructure Assistant** that helps you manage A
 ### Step 1: Start Ollama (Terminal 1)
 ```bash
 # Install model if not already present
-ollama pull qwen2.5-coder:7b
+ollama pull codellama:7b
 
 # Start Ollama server
 ollama serve

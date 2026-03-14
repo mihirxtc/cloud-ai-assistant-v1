@@ -43,7 +43,7 @@ Ask natural language questions about your infrastructure
 
 Before starting, ensure you have:
 
-1. **Ollama** installed and running with `qwen2.5-coder:7b` model
+1. **Ollama** installed and running with `codellama:7b` model
 2. **AWS credentials** configured (`aws configure`)
 3. **Terraform** installed and in PATH
 4. **Python 3.10+** installed
@@ -57,8 +57,8 @@ Before starting, ensure you have:
 # Check if Ollama is running
 ollama list
 
-# If qwen2.5-coder:7b is not installed, pull it
-ollama pull qwen2.5-coder:7b
+# If codellama:7b is not installed, pull it
+ollama pull codellama:7b
 
 # Start Ollama server (if not already running)
 ollama serve

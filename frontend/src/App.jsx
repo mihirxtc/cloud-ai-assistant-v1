@@ -39,7 +39,7 @@ const App = () => {
   const [backendStatus, setBackendStatus] = useState('checking');
   const [activeTab, setActiveTab] = useState('dashboard');
   const [availableModels, setAvailableModels] = useState({});
-  const [selectedModel, setSelectedModel] = useState('qwen2.5-coder:7b');
+  const [selectedModel, setSelectedModel] = useState('codellama:7b');
   const [showModelSelector, setShowModelSelector] = useState(false);
   const [chatMessages, setChatMessages] = useState([]);
   const [chatInput, setChatInput] = useState('');

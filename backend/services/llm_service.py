@@ -105,9 +105,9 @@ AVAILABLE_MODELS = {
 class LLMService:
     """Service for interacting with multiple LLM providers."""
     
-    def __init__(self, model_name: str = "qwen2.5-coder:7b"):
+    def __init__(self, model_name: str = "codellama:7b"):
         self.model_name = model_name
-        self.model = AVAILABLE_MODELS.get(model_name, AVAILABLE_MODELS["qwen2.5-coder:7b"])
+        self.model = AVAILABLE_MODELS.get(model_name, AVAILABLE_MODELS["codellama:7b"])
         
         # API keys for paid models (should be loaded from environment)
         self.anthropic_api_key = None  # Load from ANTHROPIC_API_KEY env var

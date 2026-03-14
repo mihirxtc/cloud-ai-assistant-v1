@@ -45,10 +45,10 @@ frontend/src/
 ### 1. LLM Model Selection ✅
 
 **Free/Local Models (Ollama):**
-- qwen2.5-coder:7b (default)
+- codellama:7b (default)
+- qwen2.5-coder:7b
 - llama3.1:8b
 - mistral:7b
-- codellama:7b
 
 **Paid API Models:**
 - Claude 3 Haiku
@@ -215,7 +215,7 @@ frontend/src/
 ## Running the Application
 
 ### Prerequisites
-1. Ollama running with `qwen2.5-coder:7b` pulled
+1. Ollama running with `codellama:7b` pulled
 2. AWS credentials configured
 3. Terraform installed
 4. Python 3.10+, Node.js 18+

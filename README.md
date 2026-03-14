@@ -4,13 +4,13 @@ A minimal working prototype that demonstrates LLM-assisted Infrastructure Analys
 
 ## Features
 - **Cloud Scanning**: Retrieves EC2, S3, VPC, and Security Group info via AWS SDK (Boto3).
-- **AI Analysis**: Uses Ollama (qwen2.5-coder:7b) to analyze cloud state for security and cost.
+- **AI Analysis**: Uses Ollama (codellama:7b) to analyze cloud state for security and cost.
 - **IaC Generation**: Automatically generates Terraform configurations based on natural language.
 - **Terraform Execution**: Orchestrates `terraform init/plan/apply` directly from the UI.
 - **Premium Dashboard**: Glassmorphic UI with real-time resource visualization.
 
 ## Prerequisites
-1. **Ollama**: Running locally with `qwen2.5-coder:7b` pulled (`ollama pull qwen2.5-coder:7b`).
+1. **Ollama**: Running locally with `codellama:7b` pulled (`ollama pull codellama:7b`).
 2. **AWS Credentials**: Configured in your environment (`aws configure`).
 3. **Terraform**: Installed and in your PATH.
 4. **Node.js**: For the frontend.
@@ -48,5 +48,5 @@ npm run dev
 ## Tech Stack
 - **Frontend**: React, Vite, Framer Motion, Lucide-React, Axios.
 - **Backend**: Python FastAPI, Boto3, httpx, uvicorn.
-- **LLM**: Ollama (`qwen2.5-coder:7b`).
+- **LLM**: Ollama (`codellama:7b`).
 - **IaC**: Terraform.
