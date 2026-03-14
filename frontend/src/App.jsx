@@ -18,7 +18,7 @@ import {
   Database, Network, Lock, ChevronRight, CheckCircle2, XCircle, DollarSign,
   Cpu, HardDrive, Globe, Zap, Brain, Settings, ChevronDown, Check, AlertOctagon,
   Info, MessageSquare, Sparkles, X, Key, Activity, BarChart3, Clock, Bot, Hammer,
-  LayoutDashboard, Layers, ShieldCheck, Wallet
+  LayoutDashboard, Layers, ShieldCheck, Wallet, Download
 } from 'lucide-react';
 
 // Configure axios to send cookies with every request
@@ -58,6 +58,8 @@ const App = () => {
   const [awsAccount, setAwsAccount] = useState(null);
   const [showAwsModal, setShowAwsModal] = useState(false);
   const [scanDuration, setScanDuration] = useState(null);
+  const [showPullPrompt, setShowPullPrompt] = useState(null);
+  const [isPulling, setIsPulling] = useState(false);
 
   useEffect(() => {
     checkBackendHealth();
@@ -135,12 +137,39 @@ const App = () => {
   };
 
   const selectModel = async (modelName) => {
+    const model = availableModels[modelName];
+    if (model && !model.is_installed && model.provider === 'ollama') {
+      setShowPullPrompt({ name: modelName, display_name: model.display_name });
+      return;
+    }
+
     try {
       await axios.post('/api/models/select', { model_name: modelName });
       setSelectedModel(modelName);
       setShowModelSelector(false);
+      setError(null);
     } catch (err) {
       setError('Failed to select model');
+    }
+  };
+
+  const pullModel = async (modelName) => {
+    setIsPulling(true);
+    setLoading(true);
+    try {
+      await axios.post('/api/models/pull', { model_name: modelName });
+      // In a real app we would poll for progress, for now we just wait for the long-running call
+      await fetchAvailableModels();
+      setShowPullPrompt(null);
+      // Automatically select it after pull
+      await axios.post('/api/models/select', { model_name: modelName });
+      setSelectedModel(modelName);
+      setError(null);
+    } catch (err) {
+      setError(`Failed to install ${modelName}. Make sure Ollama is running.`);
+    } finally {
+      setIsPulling(false);
+      setLoading(false);
     }
   };
 
@@ -382,9 +411,15 @@ const App = () => {
                     {Object.entries(availableModels).filter(([_, m]) => !m.is_paid).map(([name, model]) => (
                       <button key={name} onClick={() => selectModel(name)}
                         className={`w-full px-4 py-2.5 flex items-center gap-3 hover:bg-[#21262d] transition-colors text-left ${selectedModel === name ? 'bg-[#1f6feb]/20' : ''}`}>
-                        {selectedModel === name && <Check size={14} className="text-[#1f6feb]" />}
-                        <div>
-                          <div className="text-sm font-medium text-[#c9d1d9]">{model.display_name}</div>
+                        <div className="flex flex-col flex-1">
+                          <div className="flex items-center justify-between">
+                            <div className="text-sm font-medium text-[#c9d1d9]">{model.display_name}</div>
+                            {model.is_installed ? (
+                              <CheckCircle2 size={12} className="text-green-500" />
+                            ) : (
+                              <AlertTriangle size={12} className="text-amber-500" />
+                            )}
+                          </div>
                           <div className="text-xs text-[#8b949e]">{model.context_window.toLocaleString()} tokens</div>
                         </div>
                       </button>
@@ -535,18 +570,155 @@ const App = () => {
         {activeTab === 'resources' && resources && (
           <div className="space-y-6">
             <div className="flex items-center justify-between">
-              <h2 className="text-xl font-semibold text-white flex items-center gap-2">
-                <Layers className="text-[#1f6feb]" />
-                AWS Resources
-              </h2>
-              <div className="flex items-center gap-2 text-sm text-[#8b949e]">
-                <Clock size={14} />
-                <span>Last updated: {resources.scan_timestamp ? new Date(resources.scan_timestamp).toLocaleString() : 'Never'}</span>
+              <div>
+                <h2 className="text-xl font-semibold text-white flex items-center gap-2">
+                  <Layers className="text-[#1f6feb]" />
+                  Infrastructure Inventory
+                </h2>
+                <p className="text-sm text-[#8b949e] mt-1">Deep analysis of all provisioned cloud resources</p>
+              </div>
+              <div className="flex items-center gap-4">
+                {resources.ComplianceSummary && (
+                  <div className="flex items-center gap-2 bg-[#161b22] px-3 py-1.5 rounded-lg border border-[#30363d]">
+                    <ShieldCheck size={14} className={resources.ComplianceSummary.score >= 80 ? 'text-green-400' : 'text-yellow-400'} />
+                    <span className="text-sm text-[#c9d1d9] font-medium">Security: {resources.ComplianceSummary.score}%</span>
+                  </div>
+                )}
+                {resources.CostProjection && (
+                  <div className="flex items-center gap-2 bg-[#161b22] px-3 py-1.5 rounded-lg border border-[#30363d]">
+                    <Wallet size={14} className="text-blue-400" />
+                    <span className="text-sm text-[#c9d1d9] font-medium">${resources.CostProjection.total_monthly_cost?.toFixed(2)}/mo</span>
+                  </div>
+                )}
+                <div className="flex items-center gap-2 text-sm text-[#8b949e] bg-[#161b22] px-3 py-1.5 rounded-lg border border-[#30363d]">
+                  <Clock size={14} />
+                  <span>{resources.scan_timestamp ? new Date(resources.scan_timestamp).toLocaleTimeString() : 'Recent'}</span>
+                </div>
+                <button onClick={scanCloud} className="p-2 bg-[#1f6feb] hover:bg-[#388bfd] rounded-lg transition-colors text-white">
+                  <RefreshCw size={16} />
+                </button>
               </div>
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <ResourceCard title="EC2 Instances" count={resources.ec2_instances?.length || 0} items={resources.ec2_instances} icon={<Cpu size={18} />} color="blue" renderItem={item => <div className="flex items-center justify-between"><span>{item.InstanceId}</span><span className={`text-xs px-2 py-1 rounded ${item.State === 'running' ? 'bg-green-500/20 text-green-400' : 'bg-gray-500/20 text-gray-400'}`}>{item.State}</span></div>} />
-              <ResourceCard title="S3 Buckets" count={resources.s3_buckets?.length || 0} items={resources.s3_buckets} icon={<HardDrive size={18} />} color="green" renderItem={item => <div className="flex items-center justify-between"><span>{item.Name}</span><span className={`text-xs px-2 py-1 rounded ${item.PublicAccess === 'blocked' ? 'bg-green-500/20 text-green-400' : 'bg-yellow-500/20 text-yellow-400'}`}>{item.PublicAccess}</span></div>} />
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              <ResourceCard 
+                title="EC2 Instances" 
+                count={resources.ec2_instances?.length || 0} 
+                items={resources.ec2_instances} 
+                icon={<Cpu size={18} />} 
+                color="blue" 
+                renderItem={item => (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="font-medium text-white">{item.InstanceId}</span>
+                      <div className="flex gap-1">
+                        {item.Reachability && (
+                          <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase ${
+                            item.Reachability.status === 'isolated' ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20' : 
+                            item.Reachability.status === 'public' ? 'bg-green-500/10 text-green-400 border border-green-500/20' : 
+                            'bg-red-500/10 text-red-400 border border-red-500/30'
+                          }`} title={item.Reachability.reason}>
+                            {item.Reachability.status}
+                          </span>
+                        )}
+                        <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase ${item.State === 'running' ? 'bg-green-500/20 text-green-400' : 'bg-gray-500/20 text-gray-400'}`}>
+                          {item.State}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 text-[11px] text-[#8b949e]">
+                      <span className="bg-[#161b22] px-1.5 py-0.5 rounded border border-[#30363d]">{item.InstanceType}</span>
+                      <span className="truncate">{item.PublicIpAddress || item.PrivateIpAddress || 'No IP'}</span>
+                    </div>
+                    {item.Reachability?.status === 'exposed' && (
+                      <div className="pt-1 flex items-center gap-1 text-[10px] text-red-400">
+                        <AlertTriangle size={10} />
+                        <span>Publicly exposed via SG</span>
+                      </div>
+                    )}
+                  </div>
+                )} 
+              />
+              
+              <ResourceCard 
+                title="S3 Buckets" 
+                count={resources.s3_buckets?.length || 0} 
+                items={resources.s3_buckets || []} 
+                icon={<HardDrive size={18} />} 
+                color="green" 
+                renderItem={item => (
+                  <div className="flex items-center justify-between">
+                    <span className="truncate pr-4">{item.Name}</span>
+                    <span className={`text-[10px] px-2 py-0.5 rounded font-bold uppercase ${item.PublicAccess === 'blocked' ? 'bg-green-500/20 text-green-400' : 'bg-yellow-500/20 text-yellow-400'}`}>
+                      {item.PublicAccess}
+                    </span>
+                  </div>
+                )} 
+              />
+
+              <ResourceCard 
+                title="VPCs" 
+                count={resources.vpcs?.length || 0} 
+                items={resources.vpcs || []} 
+                icon={<Network size={18} />} 
+                color="purple" 
+                renderItem={item => (
+                  <div className="flex items-center justify-between">
+                    <span className="font-mono">{item.VpcId}</span>
+                    <span className="text-[10px] text-[#8b949e]">{item.CidrBlock}</span>
+                  </div>
+                )} 
+              />
+
+              <ResourceCard 
+                title="Security Groups" 
+                count={resources.security_groups?.length || 0} 
+                items={resources.security_groups || []} 
+                icon={<Shield size={18} />} 
+                color="orange" 
+                renderItem={item => (
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between">
+                      <span className="font-mono text-white text-xs">{item.GroupId}</span>
+                      <span className="text-[10px] bg-blue-500/10 text-blue-400 px-1 rounded">{item.VpcId}</span>
+                    </div>
+                    <p className="text-[10px] text-[#8b949e] truncate">{item.Description}</p>
+                  </div>
+                )} 
+              />
+
+              <ResourceCard 
+                title="EBS Volumes" 
+                count={resources.ebs_volumes?.length || 0} 
+                items={resources.ebs_volumes || []} 
+                icon={<Database size={18} />} 
+                color="pink" 
+                renderItem={item => (
+                  <div className="flex items-center justify-between">
+                    <div className="flex flex-col">
+                      <span className="text-xs font-mono">{item.VolumeId}</span>
+                      <span className="text-[10px] text-[#8b949e]">{item.Size} GB • {item.VolumeType}</span>
+                    </div>
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold uppercase ${item.State === 'in-use' ? 'bg-blue-500/10 text-blue-400' : 'bg-yellow-500/10 text-yellow-500 border border-yellow-500/20'}`}>
+                      {item.State}
+                    </span>
+                  </div>
+                )} 
+              />
+
+              <ResourceCard 
+                title="Databases (RDS)" 
+                count={resources.rds_instances?.length || 0} 
+                items={resources.rds_instances || []} 
+                icon={<Activity size={18} />} 
+                color="cyan" 
+                renderItem={item => (
+                  <div className="flex items-center justify-between">
+                    <span className="truncate pr-4">{item.DBInstanceIdentifier}</span>
+                    <span className="text-[10px] bg-green-500/10 text-green-400 px-1 rounded uppercase font-bold">{item.Status}</span>
+                  </div>
+                )} 
+              />
             </div>
           </div>
         )}
@@ -913,6 +1085,55 @@ const App = () => {
           </div>
         </div>
       )}
+
+      {/* Model Pull Prompt Modal */}
+      {showPullPrompt && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+          <div className="bg-[#161b22] border border-[#30363d] rounded-xl shadow-2xl max-w-md w-full overflow-hidden">
+            <div className="p-6">
+              <div className="w-12 h-12 bg-amber-500/10 rounded-full flex items-center justify-center mb-4 mx-auto">
+                <Bot size={24} className="text-amber-500" />
+              </div>
+              <h3 className="text-xl font-bold text-white text-center mb-2">Model Not Installed</h3>
+              <p className="text-[#8b949e] text-center mb-6">
+                <span className="text-[#c9d1d9] font-semibold">{showPullPrompt.display_name}</span> is not found on your device. 
+                Should I download and install it for you via Ollama?
+              </p>
+              <div className="flex flex-col gap-3">
+                <button
+                  onClick={() => pullModel(showPullPrompt.name)}
+                  disabled={isPulling}
+                  className="w-full py-3 bg-[#1f6feb] hover:bg-[#388bfd] disabled:bg-[#21262d] disabled:text-[#8b949e] rounded-lg font-semibold text-white transition-all flex items-center justify-center gap-2"
+                >
+                  {isPulling ? (
+                    <>
+                      <RefreshCw className="animate-spin" size={18} />
+                      Installing Model... (Please wait)
+                    </>
+                  ) : (
+                    <>
+                      <Download size={18} />
+                      Yes, Install Model
+                    </>
+                  )}
+                </button>
+                <button
+                  onClick={() => setShowPullPrompt(null)}
+                  disabled={isPulling}
+                  className="w-full py-3 bg-transparent hover:bg-[#21262d] rounded-lg font-medium text-[#8b949e] transition-all"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+            {isPulling && (
+              <div className="h-1 w-full bg-[#30363d] overflow-hidden">
+                <div className="h-full bg-[#1f6feb] animate-pulse w-full"></div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -971,26 +1192,34 @@ const ActionButton = ({ icon, title, description, color, onClick, loading, disab
 };
 
 const ResourceCard = ({ title, count, items, icon, color, renderItem }) => {
-  const colors = { blue: 'border-blue-500/20', green: 'border-green-500/20', purple: 'border-purple-500/20', orange: 'border-orange-500/20' };
+  const colors = { 
+    blue: 'border-blue-500/20', 
+    green: 'border-green-500/20', 
+    purple: 'border-purple-500/20', 
+    orange: 'border-orange-500/20',
+    pink: 'border-pink-500/20',
+    cyan: 'border-cyan-500/20'
+  };
   const validItems = items?.filter(item => !item.error) || [];
   return (
-    <div className={`bg-[#161b22] border ${colors[color]} rounded-lg p-4`}>
+    <div className={`bg-[#161b22] border ${colors[color]} rounded-lg p-4 h-full flex flex-col`}>
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-3">
           <div className="p-2 bg-white/5 rounded-lg">{icon}</div>
           <h3 className="font-semibold text-white">{title}</h3>
         </div>
-        <span className="px-3 py-1 bg-[#21262d] rounded-lg font-bold text-white">{count}</span>
+        <span className="px-3 py-1 bg-[#21262d] rounded-lg font-bold text-white text-xs">{count}</span>
       </div>
-      <div className="space-y-2 max-h-48 overflow-auto">
+      <div className="space-y-2 flex-1 overflow-auto max-h-64 pr-1 scrollbar-thin scrollbar-thumb-[#30363d]">
         {validItems.length === 0 ? (
-          <p className="text-sm text-[#8b949e] italic">No resources found</p>
+          <p className="text-sm text-[#8b949e] italic py-4 text-center">No resources found</p>
         ) : (
-          validItems.slice(0, 5).map((item, i) => (
-            <div key={i} className="text-sm bg-[#0d1117] rounded-lg p-3">{renderItem(item)}</div>
+          validItems.map((item, i) => (
+            <div key={item.id || item.InstanceId || item.Name || i} className="text-sm bg-[#0d1117]/50 border border-[#30363d]/50 rounded-lg p-3 hover:border-blue-500/30 transition-colors">
+              {renderItem(item)}
+            </div>
           ))
         )}
-        {validItems.length > 5 && <p className="text-xs text-[#8b949e]">+{validItems.length - 5} more</p>}
       </div>
     </div>
   );

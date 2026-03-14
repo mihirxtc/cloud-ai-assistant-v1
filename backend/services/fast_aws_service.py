@@ -275,6 +275,8 @@ class FastAWSService:
                     "InboundRulesCount": len(inbound_rules),
                     "HasOpenPorts": has_open_ports,
                     "OpenPorts": open_ports,
+                    "IpPermissions": inbound_rules,
+                    "IpPermissionsEgress": sg.get("IpPermissionsEgress", [])
                 })
             
             return security_groups

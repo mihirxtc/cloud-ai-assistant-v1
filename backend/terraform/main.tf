@@ -1,1 +1,1 @@
-{"error": "Groq error: Client error '400 Bad Request' for url 'https://api.groq.com/openai/v1/chat/completions'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/400"}
+{"error": "GROQ_API_KEY not set"}

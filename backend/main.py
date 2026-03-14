@@ -22,6 +22,10 @@ from agents import AgentOrchestrator
 
 # Utils
 from utils.mcp_builder import MCPContextBuilder
+from utils.algorithms import InfrastructureGraphSolver, ComplianceRules, CloudCostPredictor
+
+# Precision engines (instantiated on-demand with resources)
+# graph_solver, compliance_engine, cost_predictor
 
 # Session storage (in-memory for now, use Redis/DB for production)
 session_store: Dict[str, Dict[str, Any]] = {}
@@ -60,6 +64,9 @@ class QueryRequest(BaseModel):
 
 
 class ModelSelectRequest(BaseModel):
+    model_name: str
+
+class ModelPullRequest(BaseModel):
     model_name: str
 
 
@@ -137,8 +144,8 @@ async def health():
 # Model Management
 @app.get("/models")
 async def get_models(include_paid: bool = True):
-    """Get available LLM models."""
-    models = llm_service.get_available_models(include_paid=include_paid)
+    """Get available LLM models with installation status."""
+    models = await llm_service.get_available_models(include_paid=include_paid)
     return {
         "models": models,
         "current_model": llm_service.model_name,
@@ -147,6 +154,16 @@ async def get_models(include_paid: bool = True):
             "paid": [k for k, m in AVAILABLE_MODELS.items() if m.is_paid]
         }
     }
+
+
+@app.post("/models/pull")
+async def pull_model(request: ModelPullRequest):
+    """Trigger background installation of a model."""
+    success = await llm_service.pull_model(request.model_name)
+    if success:
+        return {"success": True, "message": f"Started pulling {request.model_name}"}
+    else:
+        raise HTTPException(status_code=500, detail=f"Failed to start pulling {request.model_name}")
 
 
 @app.post("/models/select")
@@ -161,7 +178,6 @@ async def select_model(request: ModelSelectRequest):
     return {"success": False, "error": "Invalid model name"}
 
 
-# Resource Scanning
 @app.post("/scan-cloud")
 async def scan_cloud(aws_service: FastAWSService = Depends(get_aws_service)):
     """Scan AWS cloud resources - always fetches fresh data."""
@@ -169,6 +185,45 @@ async def scan_cloud(aws_service: FastAWSService = Depends(get_aws_service)):
     try:
         # Force refresh to bypass any caching
         resources = aws_service.scan_all_resources(force_refresh=True)
+        
+        # Instantiate precision engines with fresh data
+        graph_solver = InfrastructureGraphSolver(resources)
+        compliance_engine = ComplianceRules(resources)
+        cost_predictor = CloudCostPredictor(resources)
+
+        # 1. Enrich with Network Reachability (Precision Algorithm)
+        for instance in resources.get("ec2_instances", []):
+            if isinstance(instance, dict) and "InstanceId" in instance:
+                # Get first path if exists
+                reachability_path = graph_solver.trace_reachability(instance["InstanceId"])
+                # Summarize reachability for the UI badge
+                if reachability_path and "error" not in reachability_path[0]:
+                    is_exposed = any(p.get("exposed") for p in reachability_path)
+                    is_reachable = not any(p.get("reachable") == False for p in reachability_path)
+                    
+                    instance["Reachability"] = {
+                        "status": "exposed" if is_exposed else "public" if is_reachable else "isolated",
+                        "reason": reachability_path[0].get("reason", "Path trace successful"),
+                        "details": reachability_path
+                    }
+        
+        # 2. Enrich with Security Compliance (CIS Benchmarks)
+        findings = compliance_engine.audit()
+        # Calculate a simple score: 100 - (10 per finding, min 0)
+        score = max(0, 100 - (len(findings) * 10))
+        resources["ComplianceSummary"] = {
+            "score": score,
+            "findings": findings,
+            "audit_timestamp": datetime.utcnow().isoformat()
+        }
+        
+        # 3. Predict Costs
+        cost_projection = cost_predictor.predict_monthly()
+        resources["CostProjection"] = {
+            "total_monthly_cost": cost_projection.get("total", 0),
+            "breakdown": cost_projection.get("breakdown", {})
+        }
+        
         cached_resources = resources
         
         return {
@@ -180,7 +235,9 @@ async def scan_cloud(aws_service: FastAWSService = Depends(get_aws_service)):
                 "security_group_count": len(resources.get("security_groups", [])),
                 "ebs_volume_count": len(resources.get("ebs_volumes", [])),
                 "load_balancer_count": len(resources.get("load_balancers", [])),
-                "rds_count": len(resources.get("rds_instances", []))
+                "rds_count": len(resources.get("rds_instances", [])),
+                "security_score": score,
+                "estimated_monthly_cost": cost_projection.get("total", 0)
             }
         }
     except Exception as e:

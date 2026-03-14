@@ -3,8 +3,10 @@ Base Agent class and agent implementations for Cloud AI Assistant.
 Implements agentic AI workflow with tools.
 """
 from abc import ABC, abstractmethod
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import json
+import re
+import datetime
 
 
 class AgentTool:
@@ -38,20 +40,140 @@ class BaseAgent(ABC):
         """Process a user query and return results."""
         pass
     
-    async def call_llm(self, prompt: str, json_format: bool = True) -> Dict[str, Any]:
+    async def call_llm(self, prompt: str, json_format: bool = True, system_prompt: str = None) -> Dict[str, Any]:
         """Call LLM with the agent's system prompt."""
         response = await self.llm_service.generate_response(
             prompt=prompt,
-            system_prompt=self.system_prompt,
+            system_prompt=system_prompt if system_prompt else self.system_prompt,
             json_format=json_format
         )
         
         if json_format:
             try:
-                return json.loads(response)
+                # Handle cases where LLM might wrap JSON in backticks
+                import re
+                clean_json = response
+                if "```json" in response:
+                    match = re.search(r'```json\s*(.*?)```', response, re.DOTALL)
+                    if match:
+                        clean_json = match.group(1).strip()
+                
+                return json.loads(clean_json)
             except json.JSONDecodeError:
                 return {"raw_response": response, "error": "Failed to parse JSON"}
         return {"response": response}
+
+
+class AgentExecutor:
+    """Handles the ReAct (Reason + Act) loop for agents."""
+    
+    def __init__(self, llm_service, agent_name: str = "CloudAgent"):
+        self.llm_service = llm_service
+        self.agent_name = agent_name
+        self.tools: Dict[str, AgentTool] = {}
+        self.max_iterations = 5
+        
+    def register_tool(self, tool: AgentTool):
+        self.tools[tool.name] = tool
+
+    async def run(self, query: str, context: Dict[str, Any] = None) -> Dict[str, Any]:
+        """Execute the Reasoning -> Action -> Observation loop."""
+        history = []
+        context = context or {}
+        
+        # 1. Build tool definitions for the prompt
+        tool_desc = ""
+        for name, tool in self.tools.items():
+            tool_desc += f"- {name}: {tool.description}\n"
+
+        system_prompt = f"""You are an advanced Cloud Infrastructure Agent. 
+You follow a strict ReAct (Reason + Act) loop: **Thought -> Action -> Observation**.
+
+AVAILABLE TOOLS:
+{tool_desc}
+
+INSTRUCTIONS:
+1. **Thought**: Explain your reasoning for the next step.
+2. **Action**: Choose a tool to call. Format: {{"tool": "tool_name", "args": {{"arg1": "val1"}}}}
+3. **Wait**: After providing an Action, STOP and wait for the Observation.
+4. **Final Answer**: Once you have enough information, provide a final response.
+
+Your goal is to solve the user's request accurately and efficiently.
+Always respond in the specified JSON format.
+"""
+
+        current_prompt = f"User Request: {query}\n\nContext: {json.dumps(context)}"
+        
+        for i in range(self.max_iterations):
+            # Call LLM for Thought + Action
+            llm_prompt = current_prompt + "\n\nReasoning Loop Step:"
+            if history:
+                llm_prompt += "\n" + "\n".join(history)
+            
+            response_json = await self._call_llm_step(llm_prompt, system_prompt)
+            
+            thought = response_json.get("thought", "")
+            action = response_json.get("action")
+            final_answer = response_json.get("final_answer")
+
+            if thought:
+                history.append(f"Thought: {thought}")
+            
+            if final_answer:
+                # Include history in the response for visibility
+                formatted_response = f"**Thinking:**\n" + "\n".join([f"> {h}" for h in history if h.startswith("Thought:")]) + f"\n\n{final_answer}"
+                return {
+                    "agent": self.agent_name,
+                    "query": query,
+                    "response": formatted_response,
+                    "history": history,
+                    "iterations": i + 1
+                }
+
+            if action and isinstance(action, dict):
+                tool_name = action.get("tool")
+                args = action.get("args", {})
+                
+                if tool_name in self.tools:
+                    history.append(f"Action: {json.dumps(action)}")
+                    try:
+                        observation = await self.tools[tool_name].execute(**args)
+                        history.append(f"Observation: {json.dumps(observation)}")
+                    except Exception as e:
+                        history.append(f"Observation Error: {str(e)}")
+                else:
+                    history.append(f"Observation Error: Tool '{tool_name}' not found.")
+            else:
+                # If no clear action or final answer, something went wrong or LLM stopped
+                break
+
+        return {
+            "agent": self.agent_name,
+            "query": query,
+            "response": "I reached my maximum reasoning capacity or encountered an error while processing your request.",
+            "history": history,
+            "error": "Max iterations reached or invalid LLM response"
+        }
+
+    async def _call_llm_step(self, prompt: str, system_prompt: str) -> Dict[str, Any]:
+        """Call LLM for a single step in the ReAct loop."""
+        response = await self.llm_service.generate_response(
+            prompt=prompt,
+            system_prompt=system_prompt,
+            json_format=True
+        )
+        try:
+            # Clean possible markdown JSON wrapping
+            import re
+            clean_json = response
+            if "```json" in response:
+                match = re.search(r'```json\s*(.*?)```', response, re.DOTALL)
+                if match:
+                    clean_json = match.group(1).strip()
+            
+            return json.loads(clean_json)
+        except:
+            return {"error": "Failed to parse LLM response", "raw": response}
 
 
 class CloudAnalysisAgent(BaseAgent):
@@ -196,33 +318,52 @@ Focus on practical, actionable findings with clear severity ratings.
 Always respond in valid JSON format."""
     
     async def process(self, query: str, context: Dict[str, Any] = None) -> Dict[str, Any]:
-        """Perform security analysis."""
+        """Perform security analysis using synchronized deterministic and agentic layers."""
         
         resources = context.get("resources", {}) if context else {}
         
+        # 1. Deterministic Layer (Always runs, providing a fail-safe baseline)
+        from utils.algorithms import ComplianceRules, InfrastructureGraphSolver
+        compliance_engine = ComplianceRules(resources)
+        graph_solver = InfrastructureGraphSolver(resources)
+        
+        # Get automated findings (CIS Benchmarks)
+        auto_findings = compliance_engine.audit()
+        
+        # Calculate baseline score: 100 - (10 per finding, min 0)
+        baseline_score = max(0, 100 - (len(auto_findings) * 10))
+        
+        # Trace reachability for context
+        reachability_traces = {}
+        for instance in resources.get("ec2_instances", []):
+            if isinstance(instance, dict) and "InstanceId" in instance:
+                reachability_traces[instance["InstanceId"]] = graph_solver.trace_reachability(instance["InstanceId"])
+
         from utils.mcp_builder import MCPContextBuilder
         mcp = MCPContextBuilder(resources)
         security_context = mcp.build_security_context()
         
-        # Perform automated security checks
-        auto_findings = self._automated_security_scan(resources)
-        
+        # 2. Agentic Layer (AI enrichment of findings)
         prompt = f"""Perform a comprehensive security audit of this AWS infrastructure.
+Your goal is to ENRICH the automated scan findings with deeper context and reasoning.
 
-QUERY: {query}
+USER QUERY: {query}
 
-AUTOMATED SCAN FINDINGS:
+AUTOMATED SCAN FINDINGS (BASE-TRUTH):
 {json.dumps(auto_findings, indent=2)}
+
+NETWORK REACHABILITY TRACES:
+{json.dumps(reachability_traces, indent=2)}
 
 FULL INFRASTRUCTURE CONTEXT:
 {json.dumps(security_context, indent=2)}
 
 Analyze and provide:
-1. Overall security risk score (0-100, lower is better)
+1. Overall security risk score (0-100, lower is better. BASELINE is {baseline_score})
 2. Critical vulnerabilities requiring immediate attention
 3. High priority security improvements
 4. Compliance gaps (SOC2, ISO27001, etc.)
-5. Network security assessment
+5. Network security assessment (Reason about the reachability traces provided)
 6. Data protection status
 
 Respond in this JSON format:
@@ -252,18 +393,47 @@ Respond in this JSON format:
   }}
 }}"""
         
-        result = await self.call_llm(prompt)
+        # 3. Synchronized Execution with Failover
+        try:
+            llm_result = await self.call_llm(prompt)
+            # If AI fails but returns an error object, trigger catch
+            if isinstance(llm_result, dict) and "error" in llm_result:
+                 raise Exception(llm_result["error"])
+        except Exception as e:
+            # Plan B: Graceful Failover to Deterministic Baseline
+            llm_result = {
+                "security_score": baseline_score,
+                "risk_level": "critical" if baseline_score < 50 else "high" if baseline_score < 70 else "medium" if baseline_score < 90 else "low",
+                "critical_findings": [
+                    {
+                        "issue": f.get("message", "Vulnerability found"),
+                        "severity": f.get("severity", "high").lower(),
+                        "affected_resources": [f.get("resource", "unknown")],
+                        "remediation": "See recommendations section"
+                    } for f in auto_findings if f.get("severity") == "CRITICAL"
+                ],
+                "recommendations": [
+                    {
+                        "priority": 1 if f.get("severity") == "CRITICAL" else 5,
+                        "action": f.get("message", "Review resource security"),
+                        "effort": "medium",
+                        "impact": "Improves security score"
+                    } for f in auto_findings[:5] # Top 5 automated recs
+                ],
+                "compliance_status": {"note": "AI Analysis currently unavailable - showing baseline compliance"},
+                "failover_active": True,
+                "failover_reason": str(e)
+            }
         
         return {
             "agent": self.name,
             "query": query,
             "automated_findings": auto_findings,
-            "llm_analysis": result,
+            "llm_analysis": llm_result,
             "total_resources_scanned": len(resources.get("ec2_instances", [])) + 
                                       len(resources.get("s3_buckets", [])) +
                                       len(resources.get("security_groups", []))
         }
-    
     def _automated_security_scan(self, resources: Dict) -> List[Dict]:
         """Perform automated security checks."""
         findings = []
@@ -410,13 +580,43 @@ Provide analysis in this JSON format:
   ]
 }}"""
         
-        result = await self.call_llm(prompt)
+        # 3. Synchronized Execution with Failover
+        try:
+            llm_result = await self.call_llm(prompt)
+            if isinstance(llm_result, dict) and "error" in llm_result:
+                raise Exception(llm_result["error"])
+        except Exception as e:
+            # Plan B: Graceful Failover to Deterministic Cost Analysis
+            llm_result = {
+                "summary": "AI Cost Analysis currently unavailable - showing baseline estimates",
+                "current_estimated_monthly_cost": cost_analysis.get("ec2", {}).get("monthly_cost", "$0.00"),
+                "projected_monthly_cost": cost_analysis.get("ec2", {}).get("monthly_cost", "$0.00"),
+                "potential_monthly_savings": "$0.00",
+                "savings_percentage": "0%",
+                "findings": [
+                    {
+                        "category": "ec2",
+                        "finding": f"Baseline monthly cost for {cost_analysis.get('ec2', {}).get('instance_count', 0)} instances",
+                        "current_cost": cost_analysis.get("ec2", {}).get("monthly_cost", "$0.00"),
+                        "optimized_cost": cost_analysis.get("ec2", {}).get("monthly_cost", "$0.00"),
+                        "monthly_savings": "$0.00",
+                        "implementation_effort": "low",
+                        "confidence": "high"
+                    }
+                ],
+                "immediate_actions": [
+                    {"action": rec, "estimated_savings": "Variable", "effort": "low", "steps": []} 
+                    for rec in cost_analysis.get("recommendations", [])
+                ],
+                "failover_active": True,
+                "failover_reason": str(e)
+            }
         
         return {
             "agent": self.name,
             "query": query,
             "cost_analysis": cost_analysis,
-            "llm_recommendations": result
+            "llm_recommendations": llm_result
         }
     
     def _analyze_costs(self, resources: Dict) -> Dict:
@@ -586,41 +786,86 @@ Response format: First the Terraform HCL code block, then the JSON summary."""
 
 
 class AgentOrchestrator:
-    """Orchestrates multiple agents and routes queries to appropriate agent."""
+    """Orchestrates multiple agents and tools via ReAct reasoning loop."""
     
     def __init__(self, llm_service):
         self.llm_service = llm_service
-        self.agents: Dict[str, BaseAgent] = {
-            "cloud_analysis": CloudAnalysisAgent(llm_service),
+        self.executor = AgentExecutor(llm_service, "CloudAssistant")
+        self.agents = {
             "security": SecurityAgent(llm_service),
             "cost": CostOptimizationAgent(llm_service),
             "terraform": TerraformAgent(llm_service)
         }
-    
+        self._register_all_tools()
+        
+    def _register_all_tools(self):
+        """Register all available infrastructure tools."""
+        
+        # 1. AWS Scanner Tool
+        async def scan_aws(regions=None):
+            from services.aws_service import AWSService
+            aws = AWSService()
+            return await aws.scan_all_resources()
+        
+        self.executor.register_tool(AgentTool(
+            "aws_scanner", 
+            "Scans AWS infrastructure for EC2 instances, S3 buckets, and Security Groups. Returns resource list.",
+            scan_aws
+        ))
+        
+        # 2. Security Analysis Tool
+        async def analyze_security(resources):
+            from utils.algorithms import ComplianceRules
+            audit_engine = ComplianceRules(resources)
+            findings = audit_engine.audit()
+            return {"vulnerabilities": findings, "audit_type": "CIS AWS Foundations"}
+
+        self.executor.register_tool(AgentTool(
+            "security_analyzer",
+            "Deep audit of resources for vulnerabilities and misconfigurations using CIS patterns.",
+            analyze_security
+        ))
+
+        # 3. Cost Analysis Tool
+        async def analyze_costs(resources):
+            from utils.algorithms import CloudCostPredictor
+            predictor = CloudCostPredictor(resources)
+            projection = predictor.predict_monthly()
+            return {"cost_projection": projection, "currency": "USD"}
+
+        self.executor.register_tool(AgentTool(
+            "cost_analyzer",
+            "Predicts monthly cloud spend and identifies idle resource costs.",
+            analyze_costs
+        ))
+
+        # 4. Terraform Generator Tool
+        async def generate_terraform(request, current_infra=None):
+            from agents import TerraformAgent
+            agent = TerraformAgent(self.llm_service)
+            # Process the request using the specialized agent logic
+            result = await agent.process(request, {"resources": current_infra or {}})
+            return {
+                "hcl_code": result.get("terraform_code", "# Error generating code"),
+                "summary": result.get("explanation", "Generated configuration"),
+                "validation": result.get("implementation_steps", [])
+            }
+
+        self.executor.register_tool(AgentTool(
+            "terraform_generator",
+            "Generates Terraform HCL code for cloud infrastructure changes.",
+            generate_terraform
+        ))
+
     async def route_query(self, query: str, context: Dict[str, Any] = None) -> Dict[str, Any]:
-        """Route query to appropriate agent based on content."""
-        
-        query_lower = query.lower()
-        
-        # Determine which agent to use
-        if any(word in query_lower for word in ["terraform", "create", "provision", "deploy", "build", "infrastructure as code"]):
-            agent = self.agents["terraform"]
-        elif any(word in query_lower for word in ["security", "vulnerability", "exposed", "open port", "risk", "threat"]):
-            agent = self.agents["security"]
-        elif any(word in query_lower for word in ["cost", "price", "expensive", "billing", "save money", "optimization", "reduce spend"]):
-            agent = self.agents["cost"]
-        else:
-            agent = self.agents["cloud_analysis"]
-        
-        # Process with selected agent
-        result = await agent.process(query, context)
-        result["agent_used"] = agent.name
-        
+        """Route query through the ReAct reasoning loop."""
+        # The executor now handles the reasoning dynamically
+        result = await self.executor.run(query, context)
         return result
     
     def get_agent_info(self) -> Dict[str, str]:
-        """Get information about available agents."""
+        """Get information about available capabilities."""
         return {
-            name: agent.__doc__ or f"{name} agent"
-            for name, agent in self.agents.items()
+            "capabilities": "Cloud Scanning, Security Auditing, Cost Optimization, Terraform Generation",
+            "mode": "ReAct Agentic Reasoning"
         }

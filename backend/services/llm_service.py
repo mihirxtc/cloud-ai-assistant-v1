@@ -122,7 +122,7 @@ AVAILABLE_MODELS = {
 class LLMService:
     """Service for interacting with multiple LLM providers."""
     
-    def __init__(self, model_name: str = "codellama:7b"):
+    def __init__(self, model_name: str = "llama3-70b-8192"):
         self.model_name = model_name
         self.model = AVAILABLE_MODELS.get(model_name, AVAILABLE_MODELS["codellama:7b"])
         
@@ -142,14 +142,58 @@ class LLMService:
             return True
         return False
     
-    def get_available_models(self, include_paid: bool = True) -> Dict[str, Dict]:
-        """Get list of available models."""
+    async def get_available_models(self, include_paid: bool = True) -> Dict[str, Dict]:
+        """Get list of available models with installation status."""
         models = {}
+        installed_locals = []
+        
+        # Try to get installed models if Ollama is running
+        try:
+            installed_locals = await self.get_installed_ollama_models()
+        except:
+            pass
+
         for name, model in AVAILABLE_MODELS.items():
             if not include_paid and model.is_paid:
                 continue
-            models[name] = model.to_dict()
+            
+            model_data = model.to_dict()
+            
+            # Check installation status for Ollama models
+            if model.provider == LLMProvider.OLLAMA:
+                # Handle cases where model name might have :latest or similar
+                is_installed = any(name in local or local in name for local in installed_locals)
+                model_data["is_installed"] = is_installed
+            else:
+                # Paid models are "installed" if they are available via API
+                model_data["is_installed"] = True
+                
+            models[name] = model_data
         return models
+    
+    async def get_installed_ollama_models(self) -> list[str]:
+        """Fetch list of models actually installed on local Ollama."""
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.get(f"{self.ollama_base_url}/api/tags")
+                if response.status_code == 200:
+                    tags = response.json().get("models", [])
+                    return [t["name"] for t in tags]
+                return []
+        except Exception:
+            return []
+
+    async def pull_model(self, model_name: str):
+        """Trigger Ollama to pull a model."""
+        url = f"{self.ollama_base_url}/api/pull"
+        payload = {"name": model_name, "stream": False}
+        
+        try:
+            async with httpx.AsyncClient(timeout=600.0) as client:
+                response = await client.post(url, json=payload)
+                return response.status_code == 200
+        except Exception as e:
+            return False
     
     async def generate_response(self, prompt: str, system_prompt: str = None,
                                 temperature: float = 0.7, json_format: bool = False) -> str:
@@ -333,10 +377,15 @@ class LLMService:
                     if response.status_code == 200:
                         models = response.json().get("models", [])
                         model_names = [m["name"] for m in models]
+                        
+                        # Check if selected model is actually installed
+                        is_installed = any(self.model_name in m or m in self.model_name for m in model_names)
+                        
                         return {
                             "status": "connected",
                             "available_models": model_names,
-                            "selected_model": self.model_name
+                            "selected_model": self.model_name,
+                            "is_installed": is_installed
                         }
                     return {"status": "error", "message": f"HTTP {response.status_code}"}
             

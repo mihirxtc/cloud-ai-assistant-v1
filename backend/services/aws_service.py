@@ -25,6 +25,8 @@ class AWSService:
             "ebs_volumes": self.get_ebs_volumes(),
             "load_balancers": self.get_load_balancers(),
             "rds_instances": self.get_rds_instances(),
+            "route_tables": self.get_route_tables(),
+            "iam_summary": self.get_iam_summary(),
             "region": self.region_name,
             "scan_timestamp": self._get_timestamp()
         }
@@ -321,6 +323,35 @@ class AWSService:
         except ClientError as e:
             return [{"error": str(e)}]
     
+    def get_route_tables(self) -> List[Dict]:
+        """Get VPC Route Tables for reachability analysis."""
+        try:
+            response = self.ec2.describe_route_tables()
+            return [
+                {
+                    "RouteTableId": rt["RouteTableId"],
+                    "VpcId": rt["VpcId"],
+                    "Routes": rt.get("Routes", []),
+                    "Associations": rt.get("Associations", [])
+                }
+                for rt in response.get("RouteTables", [])
+            ]
+        except ClientError as e:
+            return [{"error": str(e)}]
+
+    def get_iam_summary(self) -> Dict[str, Any]:
+        """Get summary of IAM users and roles for security analysis."""
+        try:
+            users = self.iam.list_users().get("Users", [])
+            roles = self.iam.list_roles().get("Roles", [])
+            return {
+                "user_count": len(users),
+                "role_count": len(roles),
+                "has_admin_roles": any("Admin" in r["RoleName"] for r in roles)
+            }
+        except ClientError as e:
+            return {"error": str(e)}
+
     def _get_timestamp(self) -> str:
         """Get current timestamp."""
         from datetime import datetime
