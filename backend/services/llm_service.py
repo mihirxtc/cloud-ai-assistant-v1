@@ -13,6 +13,7 @@ class LLMProvider(Enum):
     OLLAMA = "ollama"
     ANTHROPIC = "anthropic"
     OPENAI = "openai"
+    GROQ = "groq"
 
 
 class LLMModel:
@@ -99,6 +100,22 @@ AVAILABLE_MODELS = {
         is_paid=True,
         context_window=128000
     ),
+    
+    # Fast / Semi-paid models (Groq)
+    "llama3-70b-8192": LLMModel(
+        name="llama3-70b-8192",
+        provider=LLMProvider.GROQ,
+        display_name="Llama 3 70B (Groq/Fast)",
+        is_paid=True,
+        context_window=8192
+    ),
+    "mixtral-8x7b-32768": LLMModel(
+        name="mixtral-8x7b-32768",
+        provider=LLMProvider.GROQ,
+        display_name="Mixtral 8x7B (Groq/Fast)",
+        is_paid=True,
+        context_window=32768
+    ),
 }
 
 
@@ -112,6 +129,7 @@ class LLMService:
         # API keys for paid models (should be loaded from environment)
         self.anthropic_api_key = None  # Load from ANTHROPIC_API_KEY env var
         self.openai_api_key = None     # Load from OPENAI_API_KEY env var
+        self.groq_api_key = None       # Load from GROQ_API_KEY env var
         
         # Ollama config
         self.ollama_base_url = "http://localhost:11434"
@@ -143,6 +161,8 @@ class LLMService:
             return await self._call_anthropic(prompt, system_prompt, temperature, json_format)
         elif self.model.provider == LLMProvider.OPENAI:
             return await self._call_openai(prompt, system_prompt, temperature, json_format)
+        elif self.model.provider == LLMProvider.GROQ:
+            return await self._call_groq(prompt, system_prompt, temperature, json_format)
         else:
             return json.dumps({"error": f"Unknown provider: {self.model.provider}"})
     
@@ -264,6 +284,46 @@ class LLMService:
         except Exception as e:
             return json.dumps({"error": f"OpenAI error: {str(e)}"})
     
+    async def _call_groq(self, prompt: str, system_prompt: str = None,
+                          temperature: float = 0.7, json_format: bool = False) -> str:
+        """Call Groq API (OpenAI-compatible)."""
+        import os
+        api_key = self.groq_api_key or os.getenv("GROQ_API_KEY")
+        
+        if not api_key:
+            return json.dumps({"error": "GROQ_API_KEY not set"})
+        
+        url = "https://api.groq.com/openai/v1/chat/completions"
+        
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+        
+        payload = {
+            "model": self.model.name,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": 4096
+        }
+        
+        if json_format:
+            payload["response_format"] = {"type": "json_object"}
+        
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(url, json=payload, headers=headers)
+                response.raise_for_status()
+                result = response.json()
+                return result.get("choices", [{}])[0].get("message", {}).get("content", "{}")
+        except Exception as e:
+            return json.dumps({"error": f"Groq error: {str(e)}"})
+    
     async def test_connection(self) -> Dict[str, Any]:
         """Test connection to the current LLM provider."""
         try:
@@ -288,6 +348,12 @@ class LLMService:
             
             elif self.model.provider == LLMProvider.OPENAI:
                 api_key = self.openai_api_key or __import__('os').getenv("OPENAI_API_KEY")
+                if not api_key:
+                    return {"status": "error", "message": "API key not configured"}
+                return {"status": "connected", "selected_model": self.model_name}
+            
+            elif self.model.provider == LLMProvider.GROQ:
+                api_key = self.groq_api_key or __import__('os').getenv("GROQ_API_KEY")
                 if not api_key:
                     return {"status": "error", "message": "API key not configured"}
                 return {"status": "connected", "selected_model": self.model_name}

@@ -19,10 +19,36 @@ class LLMEngine:
         
         async with httpx.AsyncClient(timeout=120.0) as client:
             try:
-                response = await client.post(self.base_url, json=payload)
+                # Route to Groq if model looks like a Groq model
+                if "llama3" in self.model or "mixtral" in self.model:
+                    import os
+                    api_key = os.getenv("GROQ_API_KEY")
+                    if not api_key:
+                        return json.dumps({"error": "GROQ_API_KEY not set"})
+                    
+                    groq_url = "https://api.groq.com/openai/v1/chat/completions"
+                    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+                    
+                    # Groq/OpenAI payload is slightly different from Ollama
+                    payload = {
+                        "model": self.model,
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": prompt}
+                        ],
+                        "temperature": 0.7,
+                        "response_format": {"type": "json_object"}
+                    }
+                    response = await client.post(groq_url, json=payload, headers=headers)
+                else:
+                    response = await client.post(self.base_url, json=payload)
+                
                 response.raise_for_status()
                 result = response.json()
-                return result.get("message", {}).get("content", "{}")
+                
+                if "choices" in result: # OpenAI/Groq format
+                    return result.get("choices", [{}])[0].get("message", {}).get("content", "{}")
+                return result.get("message", {}).get("content", "{}") # Ollama format
             except Exception as e:
                 return json.dumps({"error": str(e)})
 
