@@ -33,8 +33,8 @@ env/
 *.swp
 *.swo
 *~
-.windsurf/
-.agent/
+.agent/workflows
+.windsurf/workflows
 
 # Terraform
 .terraform/
